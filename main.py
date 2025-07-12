@@ -1,5 +1,8 @@
 import os
 import re
+import shlex
+import asyncio
+import subprocess
 from typing import Any
 
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -19,7 +22,7 @@ db_pools: dict[str, asyncpg.Pool] = {}
 
 app = FastAPI(
     title="Minimal GitHub Proxy API",
-    version="1.2.0",
+    version="1.3.0",
     openapi_url="/openapi.json",
     docs_url=None,
     redoc_url=None,
@@ -207,3 +210,49 @@ async def read_logs(db: str, table: str, limit: int = 20) -> LogList:
         query = f'SELECT * FROM "{table}" LIMIT $1'
         rows = await pool.fetch(query, limit)
     return LogList(logs=[dict(r) for r in rows])
+
+
+class ShellRequest(BaseModel):
+    cmd: str
+
+
+class ShellResponse(BaseModel):
+    stdout: str
+    stderr: str
+    code: int
+
+
+_CMD_WHITELIST = ["ls", "cat", "psql", "curl", "echo", "pytest"]
+_SECRET_RE = re.compile(r"(SECRET|TOKEN|PASSWORD)", re.IGNORECASE)
+
+
+@app.post("/shell", response_model=ShellResponse, dependencies=[Depends(verify_token)])
+async def run_shell(request: ShellRequest) -> ShellResponse:
+    """Execute a whitelisted shell command and return its output."""
+    cmd = request.cmd.strip()
+    if _SECRET_RE.search(cmd):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    try:
+        cmd_parts = shlex.split(cmd)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid command")
+    if not cmd_parts or cmd_parts[0] not in _CMD_WHITELIST:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Command not allowed")
+
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            shell=True,
+            capture_output=True,
+            timeout=3,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=status.HTTP_408_REQUEST_TIMEOUT, detail="Command timeout")
+
+    stdout = proc.stdout.decode(errors="replace")[:10000]
+    stderr = proc.stderr.decode(errors="replace")[:10000]
+    code = proc.returncode
+
+    print(f"[shell] cmd='{cmd}' code={code}")
+    return ShellResponse(stdout=stdout, stderr=stderr, code=code)
