@@ -16,10 +16,15 @@ app = FastAPI(
     openapi_url="/openapi.json",
     docs_url=None,
     redoc_url=None,
+    servers=[
+        {
+            "url": "https://github-proxy-ycu5.onrender.com",
+            "description": "Render deployment"
+        }
+    ],
 )
 
 security = HTTPBearer()
-
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if API_BEARER_TOKEN is None:
@@ -27,10 +32,8 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(secur
     if credentials.credentials != API_BEARER_TOKEN:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
-
 class FileContent(BaseModel):
     content: str
-
 
 @app.get("/read_file", response_model=FileContent, dependencies=[Depends(verify_token)])
 async def read_file(repo: str, path: str, branch: str = "main"):
