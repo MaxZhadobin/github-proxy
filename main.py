@@ -1,5 +1,4 @@
 import os
-import json
 import re
 from typing import Any
 
@@ -15,14 +14,12 @@ load_dotenv()
 API_BEARER_TOKEN = os.getenv("API_BEARER_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# Database config loaded from db_config.json
-DB_CONFIG_FILE = "db_config.json"
-db_configs: list[dict[str, str]] = []
+# Database pools discovered from environment variables
 db_pools: dict[str, asyncpg.Pool] = {}
 
 app = FastAPI(
     title="Minimal GitHub Proxy API",
-    version="1.1.0",
+    version="1.2.0",
     openapi_url="/openapi.json",
     docs_url=None,
     redoc_url=None,
@@ -36,26 +33,25 @@ app = FastAPI(
 
 security = HTTPBearer()
 
+_ENV_DB_RE = re.compile(r"^DB_([A-Za-z0-9_]+)_URL$", re.IGNORECASE)
+_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
 @app.on_event("startup")
 async def startup() -> None:
-    """Initialize database connection pools from configuration."""
-    global db_configs, db_pools
-    if not os.path.exists(DB_CONFIG_FILE):
-        return
-    with open(DB_CONFIG_FILE, "r", encoding="utf-8") as f:
-        configs = json.load(f)
-    for entry in configs:
-        alias = entry.get("alias")
-        env_name = entry.get("dsn_env")
-        description = entry.get("description", "")
-        if not alias or not env_name:
+    """Initialize database connection pools from environment variables."""
+    for env_name, dsn in os.environ.items():
+        match = _ENV_DB_RE.match(env_name)
+        if not match:
             continue
-        dsn = os.getenv(env_name)
-        if not dsn:
+        alias = match.group(1).lower()
+        if not _NAME_RE.fullmatch(alias) or not dsn:
             continue
-        pool = await asyncpg.create_pool(dsn=dsn)
+        try:
+            pool = await asyncpg.create_pool(dsn=dsn)
+        except Exception as exc:  # pragma: no cover - log and skip invalid DSN
+            print(f"Failed to connect to database '{alias}': {exc}")
+            continue
         db_pools[alias] = pool
-        db_configs.append({"alias": alias, "description": description})
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if API_BEARER_TOKEN is None:
@@ -97,7 +93,6 @@ class FileList(BaseModel):
 
 class DatabaseInfo(BaseModel):
     alias: str
-    description: str
 
 
 class DatabaseList(BaseModel):
@@ -164,8 +159,9 @@ async def list_files(repo: str, path: str = ".", branch: str = "main"):
 
 @app.get("/databases", response_model=DatabaseList, dependencies=[Depends(verify_token)])
 async def list_databases() -> DatabaseList:
-    """Return available databases with their aliases and descriptions."""
-    return DatabaseList(databases=[DatabaseInfo(**cfg) for cfg in db_configs])
+    """Return available databases. Aliases derive from `DB_<ALIAS>_URL` env vars."""
+    aliases = sorted(db_pools.keys())
+    return DatabaseList(databases=[DatabaseInfo(alias=a) for a in aliases])
 
 
 @app.get("/tables", response_model=TableList, dependencies=[Depends(verify_token)])
@@ -178,10 +174,6 @@ async def list_tables(db: str) -> TableList:
         "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name"
     )
     return TableList(tables=[r["table_name"] for r in rows])
-
-
-_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
-
 
 @app.get("/logs", response_model=LogList, dependencies=[Depends(verify_token)])
 async def read_logs(db: str, table: str, limit: int = 20) -> LogList:

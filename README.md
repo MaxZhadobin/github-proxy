@@ -23,8 +23,9 @@ This repository contains a minimal FastAPI server that proxies requests to GitHu
 
 3. Start the server:
 
-   ```bash
-   uvicorn main:app --host 0.0.0.0 --port 8000
-   ```
-The list of databases and environment variable names is defined in `db_config.json`.
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+Databases are discovered from environment variables named `DB_<ALIAS>_URL`.
+For example `DB_CORE_URL` will register a database with alias `core`.
 See the documentation in the OpenAPI schema for request details.

@@ -1,4 +1,0 @@
-[
-  { "alias": "core", "dsn_env": "DB_CORE_URL", "description": "Core microservice" },
-  { "alias": "supabase", "dsn_env": "DB_SUPABASE_URL", "description": "Supabase prod" }
-]
