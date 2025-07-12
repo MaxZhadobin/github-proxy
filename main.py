@@ -1,7 +1,12 @@
 import os
+import json
+import re
+from typing import Any
+
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import httpx
+import asyncpg
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
@@ -10,9 +15,14 @@ load_dotenv()
 API_BEARER_TOKEN = os.getenv("API_BEARER_TOKEN")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
+# Database config loaded from db_config.json
+DB_CONFIG_FILE = "db_config.json"
+db_configs: list[dict[str, str]] = []
+db_pools: dict[str, asyncpg.Pool] = {}
+
 app = FastAPI(
     title="Minimal GitHub Proxy API",
-    version="1.0.0",
+    version="1.1.0",
     openapi_url="/openapi.json",
     docs_url=None,
     redoc_url=None,
@@ -25,6 +35,27 @@ app = FastAPI(
 )
 
 security = HTTPBearer()
+
+@app.on_event("startup")
+async def startup() -> None:
+    """Initialize database connection pools from configuration."""
+    global db_configs, db_pools
+    if not os.path.exists(DB_CONFIG_FILE):
+        return
+    with open(DB_CONFIG_FILE, "r", encoding="utf-8") as f:
+        configs = json.load(f)
+    for entry in configs:
+        alias = entry.get("alias")
+        env_name = entry.get("dsn_env")
+        description = entry.get("description", "")
+        if not alias or not env_name:
+            continue
+        dsn = os.getenv(env_name)
+        if not dsn:
+            continue
+        pool = await asyncpg.create_pool(dsn=dsn)
+        db_pools[alias] = pool
+        db_configs.append({"alias": alias, "description": description})
 
 async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     if API_BEARER_TOKEN is None:
@@ -62,6 +93,23 @@ class FileInfo(BaseModel):
 
 class FileList(BaseModel):
     files: list[FileInfo]
+
+
+class DatabaseInfo(BaseModel):
+    alias: str
+    description: str
+
+
+class DatabaseList(BaseModel):
+    databases: list[DatabaseInfo]
+
+
+class TableList(BaseModel):
+    tables: list[str]
+
+
+class LogList(BaseModel):
+    logs: list[dict[str, Any]]
 
 @app.get("/list_files", response_model=FileList, dependencies=[Depends(verify_token)])
 async def list_files(repo: str, path: str = ".", branch: str = "main"):
@@ -112,3 +160,58 @@ async def list_files(repo: str, path: str = ".", branch: str = "main"):
         result.append(FileInfo(name=epath.split("/")[-1], path=epath, type="dir" if entry["type"] == "tree" else "file"))
 
     return FileList(files=result)
+
+
+@app.get("/databases", response_model=DatabaseList, dependencies=[Depends(verify_token)])
+async def list_databases() -> DatabaseList:
+    """Return available databases with their aliases and descriptions."""
+    return DatabaseList(databases=[DatabaseInfo(**cfg) for cfg in db_configs])
+
+
+@app.get("/tables", response_model=TableList, dependencies=[Depends(verify_token)])
+async def list_tables(db: str) -> TableList:
+    """List tables in a selected database."""
+    pool = db_pools.get(db)
+    if not pool:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Database not found")
+    rows = await pool.fetch(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' ORDER BY table_name"
+    )
+    return TableList(tables=[r["table_name"] for r in rows])
+
+
+_NAME_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+@app.get("/logs", response_model=LogList, dependencies=[Depends(verify_token)])
+async def read_logs(db: str, table: str, limit: int = 20) -> LogList:
+    """Return last N rows from any table of a configured database."""
+    pool = db_pools.get(db)
+    if not pool:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Database not found")
+    if not _NAME_RE.fullmatch(table):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Table not found")
+    limit = max(1, min(limit, 500))
+    exists = await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1)",
+        table,
+    )
+    if not exists:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Table not found")
+    cols = await pool.fetch(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name=$1",
+        table,
+    )
+    col_names = [c["column_name"] for c in cols]
+    order_col = None
+    for candidate in ("created_at", "timestamp", "ts", "id"):
+        if candidate in col_names:
+            order_col = candidate
+            break
+    if order_col:
+        query = f'SELECT * FROM "{table}" ORDER BY "{order_col}" DESC LIMIT $1'
+        rows = await pool.fetch(query, limit)
+    else:
+        query = f'SELECT * FROM "{table}" LIMIT $1'
+        rows = await pool.fetch(query, limit)
+    return LogList(logs=[dict(r) for r in rows])

@@ -5,12 +5,16 @@ This repository contains a minimal FastAPI server that proxies requests to GitHu
 ## Features
 
 - `GET /read_file` – read a file from a GitHub repository via the GitHub API.
+- `GET /list_files` – recursively list files in a repository.
+- `GET /databases` – list configured databases.
+- `GET /tables` – list tables in a database.
+- `GET /logs` – read recent rows from any table.
 - Bearer token authentication.
 - Minimal OpenAPI schema available at `/openapi.json`.
 
 ## Usage
 
-1. Create a `.env` file based on `.env.example` and provide values for `API_BEARER_TOKEN` and `GITHUB_TOKEN`.
+1. Create a `.env` file based on `.env.example` and provide values for `API_BEARER_TOKEN`, `GITHUB_TOKEN` and database DSNs.
 2. Install dependencies:
 
    ```bash
@@ -22,5 +26,5 @@ This repository contains a minimal FastAPI server that proxies requests to GitHu
    ```bash
    uvicorn main:app --host 0.0.0.0 --port 8000
    ```
-
+The list of databases and environment variable names is defined in `db_config.json`.
 See the documentation in the OpenAPI schema for request details.
