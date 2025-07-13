@@ -50,7 +50,7 @@ async def startup() -> None:
         if not _NAME_RE.fullmatch(alias) or not dsn:
             continue
         try:
-            pool = await asyncpg.create_pool(dsn=dsn)
+            pool = await asyncpg.create_pool(dsn=dsn, statement_cache_size=0)
         except Exception as exc:  # pragma: no cover - log and skip invalid DSN
             print(f"Failed to connect to database '{alias}': {exc}")
             continue
