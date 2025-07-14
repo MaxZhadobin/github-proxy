@@ -9,6 +9,7 @@ This repository contains a minimal FastAPI server that proxies requests to GitHu
 - `GET /databases` – list configured databases.
 - `GET /tables` – list tables in a database.
 - `GET /logs` – read recent rows from any table.
+- `GET /schema` – get column schema of a table.
 - `POST /shell` – execute whitelisted shell commands for diagnostics.
 - Bearer token authentication.
 - Minimal OpenAPI schema available at `/openapi.json`.
