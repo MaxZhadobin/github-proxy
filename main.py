@@ -22,7 +22,7 @@ db_pools: dict[str, asyncpg.Pool] = {}
 
 app = FastAPI(
     title="Minimal GitHub Proxy API",
-    version="1.3.0",
+    version="1.4.0",
     openapi_url="/openapi.json",
     docs_url=None,
     redoc_url=None,
@@ -108,6 +108,17 @@ class TableList(BaseModel):
 
 class LogList(BaseModel):
     logs: list[dict[str, Any]]
+
+
+class ColumnInfo(BaseModel):
+    name: str
+    type: str
+    nullable: bool
+    default: Any | None
+
+
+class TableSchema(BaseModel):
+    columns: list[ColumnInfo]
 
 @app.get("/list_files", response_model=FileList, dependencies=[Depends(verify_token)])
 async def list_files(repo: str, path: str = ".", branch: str = "main"):
@@ -210,6 +221,41 @@ async def read_logs(db: str, table: str, limit: int = 20) -> LogList:
         query = f'SELECT * FROM "{table}" LIMIT $1'
         rows = await pool.fetch(query, limit)
     return LogList(logs=[dict(r) for r in rows])
+
+
+@app.get("/schema", response_model=TableSchema, dependencies=[Depends(verify_token)])
+async def get_schema(db: str, table: str) -> TableSchema:
+    """Return column information for a table in a configured database."""
+    pool = db_pools.get(db)
+    if not pool:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Database not found")
+    if not _NAME_RE.fullmatch(table):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Table not found")
+    exists = await pool.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1)",
+        table,
+    )
+    if not exists:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Table not found")
+    rows = await pool.fetch(
+        """
+        SELECT column_name, data_type, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=$1
+        ORDER BY ordinal_position
+        """,
+        table,
+    )
+    columns = [
+        ColumnInfo(
+            name=r["column_name"],
+            type=r["data_type"],
+            nullable=r["is_nullable"] == "YES",
+            default=r["column_default"],
+        )
+        for r in rows
+    ]
+    return TableSchema(columns=columns)
 
 
 class ShellRequest(BaseModel):
