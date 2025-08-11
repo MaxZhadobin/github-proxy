@@ -95,6 +95,10 @@ class FileList(BaseModel):
     dirs: list[FileInfo]
 
 
+class DirList(BaseModel):
+    dirs: list[FileInfo]
+
+
 class DatabaseInfo(BaseModel):
     alias: str
 
@@ -179,6 +183,64 @@ async def list_files(repo: str, path: str = ".", branch: str = "main"):
             dirs.append(info)
 
     return FileList(files=files, dirs=dirs)
+
+
+@app.get("/list_dirs", response_model=DirList, dependencies=[Depends(verify_token)])
+async def list_dirs(repo: str, path: str = ".", branch: str = "main"):
+    """Recursively list directories in a GitHub repository."""
+    if GITHUB_TOKEN is None:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="GitHub token not configured")
+    if "/" not in repo:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid repo format. Use owner/repo")
+
+    norm_path = path.strip("/")
+    if norm_path == "" or norm_path == ".":
+        norm_path = "."
+
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "github-proxy",
+    }
+    commit_url = f"https://api.github.com/repos/{repo}/commits/{branch}"
+    async with httpx.AsyncClient() as client:
+        commit_resp = await client.get(commit_url, headers=headers)
+    if commit_resp.status_code != 200:
+        if commit_resp.status_code == 404:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Branch not found")
+        raise HTTPException(status_code=commit_resp.status_code, detail=commit_resp.text)
+
+    tree_sha = commit_resp.json()["commit"]["tree"]["sha"]
+
+    tree_url = f"https://api.github.com/repos/{repo}/git/trees/{tree_sha}?recursive=1"
+    async with httpx.AsyncClient() as client:
+        tree_resp = await client.get(tree_url, headers=headers)
+    if tree_resp.status_code != 200:
+        raise HTTPException(status_code=tree_resp.status_code, detail=tree_resp.text)
+
+    tree_entries = tree_resp.json().get("tree", [])
+
+    if norm_path != "." and not any(e["path"] == norm_path for e in tree_entries):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
+
+    dirs: list[FileInfo] = []
+    for entry in tree_entries:
+        epath = entry["path"]
+        if norm_path != ".":
+            if not epath.startswith(norm_path + "/") and epath != norm_path:
+                continue
+            if epath == norm_path and entry["type"] == "tree":
+                continue
+        if entry["type"] == "tree":
+            dirs.append(
+                FileInfo(
+                    name=epath.split("/")[-1],
+                    path=epath,
+                    type="dir",
+                )
+            )
+
+    return DirList(dirs=dirs)
 
 
 @app.get("/databases", response_model=DatabaseList, dependencies=[Depends(verify_token)])
