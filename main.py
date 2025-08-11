@@ -92,6 +92,7 @@ class FileInfo(BaseModel):
 
 class FileList(BaseModel):
     files: list[FileInfo]
+    dirs: list[FileInfo]
 
 
 class DatabaseInfo(BaseModel):
@@ -158,7 +159,8 @@ async def list_files(repo: str, path: str = ".", branch: str = "main"):
     if norm_path != "." and not any(e["path"] == norm_path for e in tree_entries):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
 
-    result = []
+    files: list[FileInfo] = []
+    dirs: list[FileInfo] = []
     for entry in tree_entries:
         epath = entry["path"]
         if norm_path != ".":
@@ -166,9 +168,17 @@ async def list_files(repo: str, path: str = ".", branch: str = "main"):
                 continue
             if epath == norm_path and entry["type"] == "tree":
                 continue
-        result.append(FileInfo(name=epath.split("/")[-1], path=epath, type="dir" if entry["type"] == "tree" else "file"))
+        info = FileInfo(
+            name=epath.split("/")[-1],
+            path=epath,
+            type="dir" if entry["type"] == "tree" else "file",
+        )
+        if entry["type"] == "blob":
+            files.append(info)
+        elif entry["type"] == "tree":
+            dirs.append(info)
 
-    return FileList(files=result)
+    return FileList(files=files, dirs=dirs)
 
 
 @app.get("/databases", response_model=DatabaseList, dependencies=[Depends(verify_token)])
